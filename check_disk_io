@@ -1,0 +1,165 @@
+#!/usr/bin/perl
+
+## (C) Alasdair Keyes
+### http://github.com/alasdairkeyes/nagios-plugin-check_disk_io
+### Version 0.12
+### Released under GPL V2
+### http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+##
+### CHANGELOG
+### 0.1  :: 2012-05-04  First release... May the Fourth be with you...
+### 0.12 :: 2015-06-06  Replace die calls within fin() to alert
+###                     Nagios to errors more clearly
+
+use strict;
+use warnings;
+use Getopt::Long;
+
+my $CODES = {
+        "OK"            => 0,
+        "WARNING"       => 1,
+        "CRITICAL"      => 2,
+};
+
+my ($warning,$critical,@devices,@exclude_devices,$seconds,$help);
+
+my $result = GetOptions(
+        "c|critical=i"          => \$critical,
+        "w|warning=i"           => \$warning,
+        "d|devices=s@"          => \@devices,
+        "e|excludedevices=s@"   => \@exclude_devices,
+        "s|seconds=i"           => \$seconds,
+        "h|help+"               => \$help,
+);
+
+my $usage = "USAGE: $0 -c critical_percentage -w warning_percentage [ -s seconds ] [ -d device1 -d device2 ] [ -e device3 ]\n
+-c\tCritical percentage
+-w\tWarning percentage
+-s\tSeconds between checks to get the recent usage (max 60 seconds, default 5 seconds) - If setting a large value, you may need to alter your Nagios timeout settings
+-d\tDevices to check (can accept multiple -d arguments) If a -d argument is specified, only specified devices are checked
+-e\tDevices to Exclude (cannot use -e with -d)
+\nExample: Monitor all devices in iostat
+\t$0 -c 80 -w 70 -s 5 -d sda -d sdb -d sdc\n
+Example: Monitor selected devices
+\t$0 -c 80 -w 70 -s 5 -d sda -d sdb -d sdc\n
+Example: Monitor all devices except specific exclusions
+\t$0 -c 80 -w 70 -s 5 -e sda\n";
+
+if ($help) {
+        print $usage;
+        exit;
+}
+
+die $usage . "\nERROR: Must provide critical value between 0-100\n"
+        if (!$critical || $critical !~ /^\d+$/ || $critical < 1 || $critical > 100);
+
+die $usage . "\nERROR: Must provide warning value between 0-100\n"
+        if (!$warning || $warning !~ /^\d+$/ || $warning < 1 || $warning > 100);
+
+die $usage . "\nERROR: Critical must be higher than warning\n"
+        if ($critical <= $warning);
+
+$seconds = ($seconds && $seconds=~ /^\d+$/ && $seconds > 0 && $seconds <= 60)
+        ? $seconds
+        : 5;
+
+die $usage . "\nERROR: Cannot use -e and -d arguments at the same time"
+        if (scalar(@devices) && scalar(@exclude_devices));
+
+my $results = {};
+
+my $iostat_total = `iostat -x`;
+fin("CRITICAL", "Failed to execute iostat ($?): $!")
+        if ($?);
+
+my $util_index = undef;
+
+my $started = 0;
+foreach my $line (split(/\n/,$iostat_total)) {
+        if ($line =~ /^Device:/) {
+                $started++;
+                $util_index = get_util_percent_index($line);
+        } elsif ($started) {
+                my @device_info = split(/\s+/,$line);
+                my $device_name = $device_info[0];
+
+                next if (scalar(@exclude_devices) && grep { $device_name eq $_ } @exclude_devices);
+                next if (scalar(@devices) && !grep { $device_name eq $_ } @devices);
+
+                $results->{ $device_info[0] }{ total } = $device_info[$util_index];
+        }
+}
+
+if (!scalar(keys(%$results))) {
+        fin("CRITICAL", "No devices to check");
+}
+
+my $iostat_recent = `iostat -x $seconds 2`;
+fin("CRITICAL", "Failed to execute iostat ($?): $!")
+        if ($?);
+
+$started = 0;
+foreach my $line (split(/\n/,$iostat_recent)) {
+        if ($line =~ /^Device:/) {
+                $started++;
+        } elsif ($started == 2) {
+                my @device_info = split(/\s+/,$line);
+                my $device_name = $device_info[0];
+
+                next if (scalar(@exclude_devices) && grep { $device_name eq $_ } @exclude_devices);
+                next if (scalar(@devices) && !grep { $device_name eq $_ } @devices);
+
+                $results->{ $device_name }{ recent } = $device_info[$util_index];
+        }
+}
+
+my $max_value = "";
+my $message = "";
+
+foreach my $device (keys(%$results)) {
+        if (!defined($results->{ $device }{ total }) || $results->{ $device }{ total } > $critical || !defined($results->{ $device }{ recent }) || $results->{ $device }{ recent } > $critical) {
+                $max_value = "CRITICAL";
+        }
+        if ($results->{ $device }{ total } > $warning || $results->{ $device }{ recent } > $warning) {
+                $max_value = "WARNING"
+                        unless ($max_value eq "CRITICAL");
+        }
+
+        $message .= " $device: total=$results->{ $device }{ total }\% recent=$results->{ $device }{ recent }\%";
+}
+
+$max_value ||= "OK";
+
+fin ($max_value, $message);
+
+
+sub get_util_percent_index {
+        my $iostat_device_line = shift
+                || fin("CRITICAL", "Didn't get iostat device line");
+
+        my @device_line_split = split(/\s+/, $iostat_device_line);
+
+        my $count = 0;
+        foreach my $element (@device_line_split) {
+                if ($element =~ /\%util/) {
+                        return $count;
+                }
+                $count++;
+        }
+        fin("CRITICAL", "Failed to get \%util line from iostat output");
+}
+
+sub fin {
+        my $code = shift || "";
+        fin("CRITICAL", "Invalid code '$code'")
+                unless (defined($CODES->{ $code }));
+
+        my $message = shift || "";
+        unless ($message) {
+                $code = "WARNING";
+                $message = "Unknown plugin status";
+        }
+
+        print "$code:$message";
+        exit $CODES->{ $code };
+}
