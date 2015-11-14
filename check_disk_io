@@ -2,7 +2,7 @@
 
 ## (C) Alasdair Keyes
 ### http://github.com/alasdairkeyes/nagios-plugin-check_disk_io
-### Version 0.12
+### Version 0.13
 ### Released under GPL V2
 ### http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
 ##
@@ -10,6 +10,8 @@
 ### 0.1  :: 2012-05-04  First release... May the Fourth be with you...
 ### 0.12 :: 2015-06-06  Replace die calls within fin() to alert
 ###                     Nagios to errors more clearly
+### 0.13 :: 2015-11-14  Sort devices into alphabetical order when
+###                     showing results
 
 use strict;
 use warnings;
@@ -116,7 +118,7 @@ foreach my $line (split(/\n/,$iostat_recent)) {
 my $max_value = "";
 my $message = "";
 
-foreach my $device (keys(%$results)) {
+foreach my $device (sort(keys(%$results))) {
         if (!defined($results->{ $device }{ total }) || $results->{ $device }{ total } > $critical || !defined($results->{ $device }{ recent }) || $results->{ $device }{ recent } > $critical) {
                 $max_value = "CRITICAL";
         }
